@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.buildozer/
+bin/
+*.apk
+.env
+*.spec.bak

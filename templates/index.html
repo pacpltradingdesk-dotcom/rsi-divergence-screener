@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RSI Divergence × Order Block Screener</title>
+<style>
+/* ═══ Reset & Base ═══ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #0a0a14;
+  --surface:   #12121f;
+  --card:      #1a1a2e;
+  --border:    #2a2a3e;
+  --text:      #e0e0e8;
+  --muted:     #6e6e82;
+  --green:     #00d4aa;
+  --red:       #ff4757;
+  --gold:      #ffd700;
+  --blue:      #4a9eff;
+  --purple:    #a855f7;
+  --green-bg:  rgba(0,212,170,0.10);
+  --red-bg:    rgba(255,71,87,0.10);
+  --gold-bg:   rgba(255,215,0,0.08);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* ═══ Header ═══ */
+.header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.header h1 {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.header h1 span { color: var(--green); }
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ═══ Layout ═══ */
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ═══ Cards ═══ */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px 22px;
+}
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+
+/* ═══ Controls Row ═══ */
+.controls {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+.controls .card { flex: 1; min-width: 280px; }
+
+/* ═══ Symbol Input ═══ */
+.symbol-area textarea {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 10px 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  resize: vertical;
+  min-height: 58px;
+}
+.symbol-area textarea:focus { outline: none; border-color: var(--blue); }
+.symbol-area textarea::placeholder { color: var(--muted); }
+
+.preset-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.preset-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.preset-btn:hover { border-color: var(--blue); color: var(--text); }
+.preset-btn.active { border-color: var(--green); color: var(--green); }
+
+/* ═══ Settings ═══ */
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
+}
+.field label {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.field input[type="number"] {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.field input:focus { outline: none; border-color: var(--blue); }
+
+/* ═══ Timeframe Toggles ═══ */
+.tf-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.tf-toggle {
+  position: relative;
+}
+.tf-toggle input { display: none; }
+.tf-toggle label {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+}
+.tf-toggle input:checked + label {
+  border-color: var(--green);
+  color: var(--green);
+  background: var(--green-bg);
+}
+
+/* ═══ Scan Button ═══ */
+.scan-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.scan-btn {
+  background: linear-gradient(135deg, var(--green), #00b894);
+  color: #000;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 36px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+  letter-spacing: 0.5px;
+}
+.scan-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(0,212,170,0.3); }
+.scan-btn:active { transform: translateY(0); }
+.scan-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.scan-status {
+  font-size: 13px;
+  color: var(--muted);
+}
+.scan-status .count { color: var(--green); font-weight: 700; }
+.scan-status .count-warn { color: var(--gold); font-weight: 700; }
+
+/* ═══ Stats Bar ═══ */
+.stats-bar {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.stat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.stat-value {
+  font-size: 22px;
+  font-weight: 800;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+.stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.stat-green .stat-value { color: var(--green); }
+.stat-red .stat-value { color: var(--red); }
+.stat-gold .stat-value { color: var(--gold); }
+.stat-blue .stat-value { color: var(--blue); }
+
+/* ═══ Filter Buttons ═══ */
+.filter-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.filter-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.filter-btn:hover { border-color: var(--text); color: var(--text); }
+.filter-btn.active { border-color: var(--blue); color: var(--blue); background: rgba(74,158,255,0.08); }
+
+/* ═══ Results Table ═══ */
+.table-wrap {
+  overflow-x: auto;
+  margin-top: 6px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+thead th:hover { color: var(--text); }
+thead th .sort-arrow { margin-left: 4px; font-size: 10px; }
+
+tbody tr {
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+tbody tr:hover { background: rgba(255,255,255,0.02); }
+tbody tr.validated { background: var(--green-bg); }
+tbody tr.validated:hover { background: rgba(0,212,170,0.15); }
+tbody td {
+  padding: 10px 14px;
+  white-space: nowrap;
+}
+
+.sym {
+  font-weight: 700;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: var(--text);
+}
+.tf-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.signal-bullish {
+  color: var(--green);
+  font-weight: 700;
+}
+.signal-bearish {
+  color: var(--red);
+  font-weight: 700;
+}
+.signal-none {
+  color: var(--muted);
+}
+.ob-yes {
+  color: var(--gold);
+  font-weight: 700;
+}
+.ob-no { color: var(--muted); }
+
+.rsi-val {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-weight: 600;
+}
+.rsi-low { color: var(--green); }
+.rsi-mid { color: var(--text); }
+.rsi-high { color: var(--red); }
+
+.price-val {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.badge-validated {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.badge-long {
+  background: var(--green-bg);
+  color: var(--green);
+  border: 1px solid rgba(0,212,170,0.3);
+}
+.badge-short {
+  background: var(--red-bg);
+  color: var(--red);
+  border: 1px solid rgba(255,71,87,0.3);
+}
+.badge-na {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ═══ Empty / Loading States ═══ */
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--muted);
+}
+.empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+.empty-state p { font-size: 14px; }
+
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--green);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ═══ Progress Bar ═══ */
+.progress-bar {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  display: none;
+}
+.progress-bar.active { display: block; }
+.progress-bar .fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--green), var(--blue));
+  border-radius: 2px;
+  transition: width 0.3s;
+  animation: progress-pulse 1.5s ease-in-out infinite;
+}
+@keyframes progress-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* ═══ Responsive ═══ */
+@media (max-width: 768px) {
+  .container { padding: 12px; }
+  .controls { flex-direction: column; }
+  .header { padding: 12px 16px; }
+  .stats-bar { gap: 8px; }
+  .stat { padding: 8px 12px; }
+  .stat-value { font-size: 18px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ Header ═══ -->
+<div class="header">
+  <h1>RSI Divergence <span>×</span> Order Block Screener</h1>
+  <div class="header-right">
+    <span id="lastScan">No scan yet</span>
+  </div>
+</div>
+
+<div class="progress-bar" id="progressBar"><div class="fill" style="width:100%"></div></div>
+
+<div class="container">
+
+  <!-- ═══ Controls ═══ -->
+  <div class="controls">
+
+    <!-- Symbols -->
+    <div class="card symbol-area" style="flex:2">
+      <div class="card-title">Watchlist</div>
+      <textarea id="symbols" placeholder="Enter symbols separated by commas — e.g. AAPL, MSFT, TSLA"></textarea>
+      <div class="preset-btns">
+        {% for name, syms in presets.items() %}
+        <button class="preset-btn" data-name="{{ name }}" data-syms='{{ syms | tojson }}'>{{ name }}</button>
+        {% endfor %}
+        <button class="preset-btn" onclick="clearSymbols()" style="border-color:#ff4757;color:#ff4757">Clear</button>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div class="card">
+      <div class="card-title">Settings</div>
+      <div class="settings-grid">
+        <div class="field">
+          <label>RSI Length</label>
+          <input type="number" id="rsiLen" value="14" min="2" max="50">
+        </div>
+        <div class="field">
+          <label>Pivot Length</label>
+          <input type="number" id="pivotLen" value="5" min="2" max="20">
+        </div>
+        <div class="field">
+          <label>OB Prox. %</label>
+          <input type="number" id="obProx" value="1.0" min="0.1" max="10" step="0.1">
+        </div>
+      </div>
+      <div style="margin-top:14px">
+        <div class="card-title" style="margin-bottom:8px">Timeframes</div>
+        <div class="tf-toggles">
+          <div class="tf-toggle"><input type="checkbox" id="tf-1H" checked><label for="tf-1H">1H</label></div>
+          <div class="tf-toggle"><input type="checkbox" id="tf-Daily" checked><label for="tf-Daily">Daily</label></div>
+          <div class="tf-toggle"><input type="checkbox" id="tf-Weekly" checked><label for="tf-Weekly">Weekly</label></div>
+          <div class="tf-toggle"><input type="checkbox" id="tf-Monthly" checked><label for="tf-Monthly">Monthly</label></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Scan Row ═══ -->
+  <div class="scan-row">
+    <button class="scan-btn" id="scanBtn" onclick="runScan()">Scan Now</button>
+    <div class="scan-status" id="scanStatus"></div>
+  </div>
+
+  <!-- ═══ Stats ═══ -->
+  <div class="stats-bar" id="statsBar" style="display:none">
+    <div class="stat stat-blue">
+      <div><div class="stat-value" id="statScanned">0</div><div class="stat-label">Scanned</div></div>
+    </div>
+    <div class="stat stat-green">
+      <div><div class="stat-value" id="statSignals">0</div><div class="stat-label">Signals</div></div>
+    </div>
+    <div class="stat stat-gold">
+      <div><div class="stat-value" id="statValidated">0</div><div class="stat-label">Validated (Near OB)</div></div>
+    </div>
+  </div>
+
+  <!-- ═══ Results ═══ -->
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:10px;">
+      <div class="card-title" style="margin-bottom:0">Results</div>
+      <div class="filter-row">
+        <button class="filter-btn active" data-filter="all" onclick="setFilter('all',this)">All</button>
+        <button class="filter-btn" data-filter="signals" onclick="setFilter('signals',this)">Signals Only</button>
+        <button class="filter-btn" data-filter="validated" onclick="setFilter('validated',this)">Validated Only</button>
+        <button class="filter-btn" data-filter="bullish" onclick="setFilter('bullish',this)">Bullish</button>
+        <button class="filter-btn" data-filter="bearish" onclick="setFilter('bearish',this)">Bearish</button>
+        <button class="filter-btn" data-filter="hidden" onclick="setFilter('hidden',this)">Hidden Div</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th onclick="sortTable('symbol')">Symbol <span class="sort-arrow"></span></th>
+            <th onclick="sortTable('timeframe')">Timeframe <span class="sort-arrow"></span></th>
+            <th onclick="sortTable('signal')">Signal <span class="sort-arrow"></span></th>
+            <th onclick="sortTable('div_type')">Type <span class="sort-arrow"></span></th>
+            <th onclick="sortTable('near_ob')">Near OB? <span class="sort-arrow"></span></th>
+            <th onclick="sortTable('ob_zone')">OB Zone</th>
+            <th onclick="sortTable('rsi')">RSI <span class="sort-arrow"></span></th>
+            <th onclick="sortTable('price')">Price <span class="sort-arrow"></span></th>
+            <th onclick="sortTable('validated')">Action <span class="sort-arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody">
+          <tr><td colspan="9">
+            <div class="empty-state">
+              <div class="icon">&#128270;</div>
+              <p>Add symbols and click <strong>Scan Now</strong> to detect RSI divergence near Order Blocks</p>
+            </div>
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ═══ State ═══
+let allResults = [];
+let currentFilter = 'all';
+let sortCol = 'validated';
+let sortAsc = false;
+
+// ═══ Presets ═══
+function loadPreset(name, syms) {
+  const ta = document.getElementById('symbols');
+  ta.value = syms.join(', ');
+
+  document.querySelectorAll('.preset-btn').forEach(b => {
+    b.classList.toggle('active', b.textContent.trim() === name);
+  });
+}
+function clearSymbols() {
+  document.getElementById('symbols').value = '';
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+}
+
+// ═══ Scan ═══
+async function runScan() {
+  const btn = document.getElementById('scanBtn');
+  const status = document.getElementById('scanStatus');
+  const bar = document.getElementById('progressBar');
+
+  // Parse inputs
+  const symbols = document.getElementById('symbols').value
+    .split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
+  const timeframes = [];
+  ['1H','Daily','Weekly','Monthly'].forEach(tf => {
+    if (document.getElementById('tf-' + tf).checked) timeframes.push(tf);
+  });
+
+  if (symbols.length === 0) { status.innerHTML = '<span style="color:var(--red)">Enter at least one symbol</span>'; return; }
+  if (timeframes.length === 0) { status.innerHTML = '<span style="color:var(--red)">Select at least one timeframe</span>'; return; }
+
+  // UI state
+  btn.disabled = true;
+  btn.textContent = 'Scanning...';
+  bar.classList.add('active');
+  status.innerHTML = `<span class="spinner"></span> Scanning ${symbols.length} symbols × ${timeframes.length} timeframes...`;
+
+  try {
+    const res = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbols,
+        timeframes,
+        rsi_len:   parseInt(document.getElementById('rsiLen').value),
+        pivot_len: parseInt(document.getElementById('pivotLen').value),
+        ob_prox:   parseFloat(document.getElementById('obProx').value),
+      })
+    });
+    const data = await res.json();
+
+    if (data.error) {
+      status.innerHTML = `<span style="color:var(--red)">${data.error}</span>`;
+      return;
+    }
+
+    allResults = data.results;
+
+    // Stats
+    document.getElementById('statsBar').style.display = 'flex';
+    document.getElementById('statScanned').textContent = data.scanned;
+    document.getElementById('statSignals').textContent = data.signals;
+    document.getElementById('statValidated').textContent = data.validated;
+    document.getElementById('lastScan').textContent = 'Last scan: ' + data.timestamp;
+
+    status.innerHTML = `Done — <span class="count">${data.validated}</span> validated signal(s) found`;
+
+    renderTable();
+
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">Error: ${e.message}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Scan Now';
+    bar.classList.remove('active');
+  }
+}
+
+// ═══ Render ═══
+function renderTable() {
+  const body = document.getElementById('resultsBody');
+  let data = filterResults(allResults);
+  data = sortResults(data);
+
+  if (data.length === 0) {
+    body.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="icon">&#128528;</div><p>No results match the current filter</p></div></td></tr>`;
+    return;
+  }
+
+  body.innerHTML = data.map(r => {
+    const sigClass = r.signal === 'Bullish' ? 'signal-bullish' :
+                     r.signal === 'Bearish' ? 'signal-bearish' : 'signal-none';
+    const sigIcon = r.signal === 'Bullish' ? '&#9650; ' :
+                    r.signal === 'Bearish' ? '&#9660; ' : '';
+    const obClass = r.near_ob ? 'ob-yes' : 'ob-no';
+    const obText = r.near_ob ? '&#10003; Yes' : '—';
+    const rsiClass = r.rsi < 35 ? 'rsi-low' : r.rsi > 65 ? 'rsi-high' : 'rsi-mid';
+
+    // Divergence type badge
+    let divBadge = '<span style="color:var(--muted)">—</span>';
+    if (r.div_type === 'Regular')
+      divBadge = '<span style="color:var(--blue);font-weight:600">Regular</span>';
+    else if (r.div_type === 'Hidden')
+      divBadge = '<span style="color:var(--purple);font-weight:600">Hidden</span>';
+
+    let action = '<span class="badge-na">—</span>';
+    if (r.validated && r.signal === 'Bullish')
+      action = '<span class="badge-validated badge-long">&#9650; LONG</span>';
+    else if (r.validated && r.signal === 'Bearish')
+      action = '<span class="badge-validated badge-short">&#9660; SHORT</span>';
+
+    const rowClass = r.validated ? 'validated' : '';
+
+    return `<tr class="${rowClass}">
+      <td class="sym">${r.symbol}</td>
+      <td><span class="tf-badge">${r.timeframe}</span></td>
+      <td class="${sigClass}">${sigIcon}${r.signal}</td>
+      <td>${divBadge}</td>
+      <td class="${obClass}">${obText}</td>
+      <td class="price-val" style="color:var(--muted);font-size:12px">${r.ob_zone || '—'}</td>
+      <td class="rsi-val ${rsiClass}">${r.rsi}</td>
+      <td class="price-val">${r.price.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</td>
+      <td>${action}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ═══ Filter ═══
+function filterResults(data) {
+  switch (currentFilter) {
+    case 'signals':   return data.filter(r => r.signal !== 'None');
+    case 'validated': return data.filter(r => r.validated);
+    case 'bullish':   return data.filter(r => r.signal === 'Bullish');
+    case 'bearish':   return data.filter(r => r.signal === 'Bearish');
+    case 'hidden':    return data.filter(r => r.div_type === 'Hidden');
+    default:          return data;
+  }
+}
+function setFilter(f, el) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  renderTable();
+}
+
+// ═══ Sort ═══
+function sortTable(col) {
+  if (sortCol === col) { sortAsc = !sortAsc; }
+  else { sortCol = col; sortAsc = true; }
+  renderTable();
+}
+function sortResults(data) {
+  return [...data].sort((a, b) => {
+    let va = a[sortCol], vb = b[sortCol];
+    if (typeof va === 'boolean') { va = va ? 1 : 0; vb = vb ? 1 : 0; }
+    if (typeof va === 'string')  { va = va.toLowerCase(); vb = vb.toLowerCase(); }
+    if (va == null) va = '';
+    if (vb == null) vb = '';
+    if (va < vb) return sortAsc ? -1 : 1;
+    if (va > vb) return sortAsc ? 1 : -1;
+    return 0;
+  });
+}
+
+// ═══ Preset click handlers ═══
+document.querySelectorAll('.preset-btn[data-syms]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const name = btn.getAttribute('data-name');
+    const syms = JSON.parse(btn.getAttribute('data-syms'));
+    loadPreset(name, syms);
+  });
+});
+
+// ═══ Keyboard shortcut ═══
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') runScan();
+});
+</script>
+</body>
+</html>

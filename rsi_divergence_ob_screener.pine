@@ -1,0 +1,392 @@
+// ══════════════════════════════════════════════════════════════════════════════════
+// RSI Divergence × Order Block Screener
+// ══════════════════════════════════════════════════════════════════════════════════
+// Multi-timeframe RSI divergence detection validated against institutional
+// Order Block zones. Non-repainting, screener-ready with alert conditions.
+// ══════════════════════════════════════════════════════════════════════════════════
+//@version=5
+indicator("RSI Divergence × Order Block Screener", "RSI Div + OB",
+     overlay = true,
+     max_boxes_count = 500,
+     max_labels_count = 500,
+     max_lines_count = 500)
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════════════════════════════════════════
+
+// — RSI & Pivot —
+grpCore = "Core Settings"
+i_rsiLen    = input.int(14,  "RSI Length",           minval = 2,            group = grpCore)
+i_pivotLen  = input.int(5,   "Pivot Lookback/Right", minval = 2, maxval = 20, group = grpCore)
+
+// — Order Block —
+grpOB = "Order Block"
+i_obProxPct = input.float(1.0, "OB Proximity (%)",  minval = 0.1, step = 0.1, group = grpOB) / 100
+i_obHistory = input.int(50,    "Max OB Zones Shown", minval = 1,  maxval = 100, group = grpOB)
+
+// — Timeframe Toggles —
+grpTF = "Multi-Timeframe Screener"
+i_tf1H = input.bool(true, "1 Hour",   group = grpTF)
+i_tfD  = input.bool(true, "Daily",    group = grpTF)
+i_tfW  = input.bool(true, "Weekly",   group = grpTF)
+i_tfM  = input.bool(true, "Monthly",  group = grpTF)
+
+// — Visuals —
+grpVis = "Visuals"
+i_showOB     = input.bool(true,  "Draw OB Zones on Chart",   group = grpVis)
+i_showLabels = input.bool(true,  "Show Divergence Labels",   group = grpVis)
+i_showTable  = input.bool(true,  "Show Screener Table",      group = grpVis)
+i_tblPos     = input.string("Top Right", "Table Position",
+     options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = grpVis)
+i_bullOBCol  = input.color(color.new(color.green, 85), "Bullish OB Color", group = grpVis)
+i_bearOBCol  = input.color(color.new(color.red,   85), "Bearish OB Color", group = grpVis)
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// CORE SIGNAL FUNCTION  (called per-timeframe via request.security)
+// ══════════════════════════════════════════════════════════════════════════════════
+// Returns four booleans: bullish divergence, bearish divergence,
+// near bullish OB, near bearish OB.
+// Uses only ta.valuewhen — no var — so it works cleanly inside request.security().
+
+f_signals() =>
+    // ── RSI ──
+    float _rsi = ta.rsi(close, i_rsiLen)
+
+    // ── Pivot Detection (confirmed: needs pivotLen bars to the right) ──
+    float _ph = ta.pivothigh(high, i_pivotLen, i_pivotLen)
+    float _pl = ta.pivotlow(low,   i_pivotLen, i_pivotLen)
+    bool  _phOk = not na(_ph)
+    bool  _plOk = not na(_pl)
+
+    // ── Divergence: compare two most recent pivots ──
+    // Price pivots
+    float _currPH = ta.valuewhen(_phOk, _ph, 0)
+    float _prevPH = ta.valuewhen(_phOk, _ph, 1)
+    float _currPL = ta.valuewhen(_plOk, _pl, 0)
+    float _prevPL = ta.valuewhen(_plOk, _pl, 1)
+
+    // RSI at the bar where the pivot actually occurred (pivotLen bars back)
+    float _rsiPH0 = ta.valuewhen(_phOk, _rsi[i_pivotLen], 0)
+    float _rsiPH1 = ta.valuewhen(_phOk, _rsi[i_pivotLen], 1)
+    float _rsiPL0 = ta.valuewhen(_plOk, _rsi[i_pivotLen], 0)
+    float _rsiPL1 = ta.valuewhen(_plOk, _rsi[i_pivotLen], 1)
+
+    // Bearish divergence: price Higher High + RSI Lower High
+    bool _bearDiv = _phOk and _currPH > _prevPH and _rsiPH0 < _rsiPH1
+    // Bullish divergence: price Lower Low  + RSI Higher Low
+    bool _bullDiv = _plOk and _currPL < _prevPL and _rsiPL0 > _rsiPL1
+
+    // ── Order Block Detection ──
+    // Track most recent bearish / bullish candle bodies
+    bool  _isBear = close < open
+    bool  _isBull = close > open
+    float _lastBearHi = ta.valuewhen(_isBear, high, 0)
+    float _lastBearLo = ta.valuewhen(_isBear, low,  0)
+    float _lastBullHi = ta.valuewhen(_isBull, high, 0)
+    float _lastBullLo = ta.valuewhen(_isBull, low,  0)
+
+    // Bullish OB  → last bearish candle before break above pivot high
+    // Bearish OB  → last bullish candle before break below pivot low
+    bool _brkUp = not na(_currPH) and ta.crossover(high, _currPH)
+    bool _brkDn = not na(_currPL) and ta.crossunder(low,  _currPL)
+
+    float _bullOBHi = ta.valuewhen(_brkUp, _lastBearHi, 0)
+    float _bullOBLo = ta.valuewhen(_brkUp, _lastBearLo, 0)
+    float _bearOBHi = ta.valuewhen(_brkDn, _lastBullHi, 0)
+    float _bearOBLo = ta.valuewhen(_brkDn, _lastBullLo, 0)
+
+    // ── Proximity Check ──
+    float _bullOBMid = nz((_bullOBHi + _bullOBLo) / 2)
+    float _bearOBMid = nz((_bearOBHi + _bearOBLo) / 2)
+    bool  _nearBullOB = _bullOBMid > 0 and math.abs(close - _bullOBMid) / _bullOBMid <= i_obProxPct
+    bool  _nearBearOB = _bearOBMid > 0 and math.abs(close - _bearOBMid) / _bearOBMid <= i_obProxPct
+
+    [_bullDiv, _bearDiv, _nearBullOB, _nearBearOB]
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// CHART-TIMEFRAME CALCULATIONS  (full detail for visuals)
+// ══════════════════════════════════════════════════════════════════════════════════
+
+// ── RSI ──
+float ctRsi = ta.rsi(close, i_rsiLen)
+
+// ── Pivots ──
+float ctPH = ta.pivothigh(high, i_pivotLen, i_pivotLen)
+float ctPL = ta.pivotlow(low,   i_pivotLen, i_pivotLen)
+bool  ctPHok = not na(ctPH)
+bool  ctPLok = not na(ctPL)
+
+// ── Divergence (same logic as f_signals, calculated here for labels) ──
+float ctCurrPH = ta.valuewhen(ctPHok, ctPH, 0)
+float ctPrevPH = ta.valuewhen(ctPHok, ctPH, 1)
+float ctCurrPL = ta.valuewhen(ctPLok, ctPL, 0)
+float ctPrevPL = ta.valuewhen(ctPLok, ctPL, 1)
+
+float ctRsiPH0 = ta.valuewhen(ctPHok, ctRsi[i_pivotLen], 0)
+float ctRsiPH1 = ta.valuewhen(ctPHok, ctRsi[i_pivotLen], 1)
+float ctRsiPL0 = ta.valuewhen(ctPLok, ctRsi[i_pivotLen], 0)
+float ctRsiPL1 = ta.valuewhen(ctPLok, ctRsi[i_pivotLen], 1)
+
+bool ctBearDiv = ctPHok and ctCurrPH > ctPrevPH and ctRsiPH0 < ctRsiPH1
+bool ctBullDiv = ctPLok and ctCurrPL < ctPrevPL and ctRsiPL0 > ctRsiPL1
+
+// ── Order Blocks (chart TF) ──
+bool  ctIsBear = close < open
+bool  ctIsBull = close > open
+float ctLastBearHi = ta.valuewhen(ctIsBear, high, 0)
+float ctLastBearLo = ta.valuewhen(ctIsBear, low,  0)
+float ctLastBullHi = ta.valuewhen(ctIsBull, high, 0)
+float ctLastBullLo = ta.valuewhen(ctIsBull, low,  0)
+
+bool ctBrkUp = not na(ctCurrPH) and ta.crossover(high, ctCurrPH)
+bool ctBrkDn = not na(ctCurrPL) and ta.crossunder(low,  ctCurrPL)
+
+// OB zones locked at breakout
+float ctBullOBHi = ta.valuewhen(ctBrkUp, ctLastBearHi, 0)
+float ctBullOBLo = ta.valuewhen(ctBrkUp, ctLastBearLo, 0)
+float ctBearOBHi = ta.valuewhen(ctBrkDn, ctLastBullHi, 0)
+float ctBearOBLo = ta.valuewhen(ctBrkDn, ctLastBullLo, 0)
+
+// Proximity
+float ctBullOBMid = nz((ctBullOBHi + ctBullOBLo) / 2)
+float ctBearOBMid = nz((ctBearOBHi + ctBearOBLo) / 2)
+bool  ctNearBullOB = ctBullOBMid > 0 and math.abs(close - ctBullOBMid) / ctBullOBMid <= i_obProxPct
+bool  ctNearBearOB = ctBearOBMid > 0 and math.abs(close - ctBearOBMid) / ctBearOBMid <= i_obProxPct
+
+// Combined chart-TF validated signals
+bool ctBullSignal = ctBullDiv and ctNearBullOB and barstate.isconfirmed
+bool ctBearSignal = ctBearDiv and ctNearBearOB and barstate.isconfirmed
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// MULTI-TIMEFRAME via request.security()   (lookahead OFF → non-repainting)
+// ══════════════════════════════════════════════════════════════════════════════════
+
+[h1Bull,  h1Bear,  h1NearBull,  h1NearBear]  = request.security(syminfo.tickerid, "60",  f_signals(), lookahead = barmerge.lookahead_off)
+[dBull,   dBear,   dNearBull,   dNearBear]   = request.security(syminfo.tickerid, "D",   f_signals(), lookahead = barmerge.lookahead_off)
+[wBull,   wBear,   wNearBull,   wNearBear]   = request.security(syminfo.tickerid, "W",   f_signals(), lookahead = barmerge.lookahead_off)
+[mBull,   mBear,   mNearBull,   mNearBear]   = request.security(syminfo.tickerid, "M",   f_signals(), lookahead = barmerge.lookahead_off)
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// VISUALS — ORDER BLOCK ZONES
+// ══════════════════════════════════════════════════════════════════════════════════
+
+// Arrays to manage OB boxes (limited to i_obHistory most recent)
+var box[] bullOBBoxes = array.new_box()
+var box[] bearOBBoxes = array.new_box()
+
+// Helper: cap array size and delete oldest box
+f_capBoxes(arr, maxSize) =>
+    while array.size(arr) > maxSize
+        box.delete(array.shift(arr))
+
+if i_showOB
+    // Bullish OB — drawn on breakout above pivot high
+    if ctBrkUp and not na(ctLastBearHi) and not na(ctLastBearLo)
+        bx = box.new(bar_index - i_pivotLen, ctLastBearHi, bar_index + 20, ctLastBearLo,
+             border_color = color.green, bgcolor = i_bullOBCol,
+             border_width = 1, border_style = line.style_solid,
+             text = "Bull OB", text_color = color.green, text_size = size.tiny,
+             text_halign = text.align_left, text_valign = text.align_top)
+        array.push(bullOBBoxes, bx)
+        f_capBoxes(bullOBBoxes, i_obHistory)
+
+    // Bearish OB — drawn on breakout below pivot low
+    if ctBrkDn and not na(ctLastBullHi) and not na(ctLastBullLo)
+        bx = box.new(bar_index - i_pivotLen, ctLastBullHi, bar_index + 20, ctLastBullLo,
+             border_color = color.red, bgcolor = i_bearOBCol,
+             border_width = 1, border_style = line.style_solid,
+             text = "Bear OB", text_color = color.red, text_size = size.tiny,
+             text_halign = text.align_left, text_valign = text.align_top)
+        array.push(bearOBBoxes, bx)
+        f_capBoxes(bearOBBoxes, i_obHistory)
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// VISUALS — DIVERGENCE LABELS
+// ══════════════════════════════════════════════════════════════════════════════════
+
+if i_showLabels
+    // Bullish divergence label at the confirmed pivot low
+    if ctBullDiv and barstate.isconfirmed
+        lbl_style  = ctNearBullOB ? label.style_label_up : label.style_triangleup
+        lbl_text   = ctNearBullOB ? "Bull Div\n+ OB" : "Bull Div"
+        lbl_col    = ctNearBullOB ? color.lime : color.green
+        label.new(bar_index - i_pivotLen, ctCurrPL, lbl_text,
+             style = lbl_style, color = lbl_col, textcolor = color.white, size = size.small)
+
+    // Bearish divergence label at the confirmed pivot high
+    if ctBearDiv and barstate.isconfirmed
+        lbl_style  = ctNearBearOB ? label.style_label_down : label.style_triangledown
+        lbl_text   = ctNearBearOB ? "Bear Div\n+ OB" : "Bear Div"
+        lbl_col    = ctNearBearOB ? color.fuchsia : color.red
+        label.new(bar_index - i_pivotLen, ctCurrPH, lbl_text,
+             style = lbl_style, color = lbl_col, textcolor = color.white, size = size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// VISUALS — DIVERGENCE LINES (connect previous and current pivots)
+// ══════════════════════════════════════════════════════════════════════════════════
+
+// Bar index of current and previous pivots
+int ctPHBar0 = ta.valuewhen(ctPHok, bar_index - i_pivotLen, 0)
+int ctPHBar1 = ta.valuewhen(ctPHok, bar_index - i_pivotLen, 1)
+int ctPLBar0 = ta.valuewhen(ctPLok, bar_index - i_pivotLen, 0)
+int ctPLBar1 = ta.valuewhen(ctPLok, bar_index - i_pivotLen, 1)
+
+if i_showLabels
+    if ctBearDiv and barstate.isconfirmed
+        line.new(ctPHBar1, ctPrevPH, ctPHBar0, ctCurrPH,
+             color = color.red, width = 2, style = line.style_dashed)
+
+    if ctBullDiv and barstate.isconfirmed
+        line.new(ctPLBar1, ctPrevPL, ctPLBar0, ctCurrPL,
+             color = color.green, width = 2, style = line.style_dashed)
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// VISUALS — RSI (data window only; overlay=true prevents separate pane)
+// ══════════════════════════════════════════════════════════════════════════════════
+
+plot(ctRsi, "RSI", color.new(color.purple, 100), display = display.data_window)
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// SCREENER TABLE
+// ══════════════════════════════════════════════════════════════════════════════════
+
+// Resolve table position
+var table_pos = switch i_tblPos
+    "Top Right"    => position.top_right
+    "Top Left"     => position.top_left
+    "Bottom Right" => position.bottom_right
+    => position.bottom_left
+
+var table tbl = na
+
+if i_showTable
+    tbl := table.new(table_pos, 4, 6,
+         border_color = color.gray, border_width = 1,
+         frame_color  = color.gray, frame_width  = 2)
+
+// Determine signal type string and color per timeframe
+f_sigType(bull, bear) =>
+    bull ? "Bullish" : bear ? "Bearish" : "None"
+
+f_sigColor(bull, bear) =>
+    bull ? color.green : bear ? color.red : color.gray
+
+f_nearOB(nearBull, nearBear, bull, bear) =>
+    (bull and nearBull) or (bear and nearBear) ? "Yes" : "No"
+
+f_nearOBColor(nearBull, nearBear, bull, bear) =>
+    (bull and nearBull) or (bear and nearBear) ? color.lime : color.gray
+
+// Row builder (must be top-level, not inside if block)
+f_row(row, tfLabel, bull, bear, nBull, nBear, enabled) =>
+    if enabled
+        sig   = f_sigType(bull, bear)
+        sigC  = f_sigColor(bull, bear)
+        ob    = f_nearOB(nBull, nBear, bull, bear)
+        obC   = f_nearOBColor(nBull, nBear, bull, bear)
+        valid = (bull and nBull) or (bear and nBear)
+        act   = valid ? (bull ? "▲ LONG" : "▼ SHORT") : "—"
+        actC  = valid ? (bull ? color.lime : color.fuchsia) : color.gray
+
+        table.cell(tbl, 0, row, tfLabel, text_color = color.white, bgcolor = #2a2e39, text_size = size.small)
+        table.cell(tbl, 1, row, sig,     text_color = sigC,        bgcolor = #2a2e39, text_size = size.small)
+        table.cell(tbl, 2, row, ob,      text_color = obC,         bgcolor = #2a2e39, text_size = size.small)
+        table.cell(tbl, 3, row, act,     text_color = actC,        bgcolor = #2a2e39, text_size = size.small)
+
+if i_showTable and barstate.islast
+    // Header row
+    table.cell(tbl, 0, 0, "Timeframe",  text_color = color.white, bgcolor = #363a45, text_size = size.small)
+    table.cell(tbl, 1, 0, "Signal",     text_color = color.white, bgcolor = #363a45, text_size = size.small)
+    table.cell(tbl, 2, 0, "Near OB?",   text_color = color.white, bgcolor = #363a45, text_size = size.small)
+    table.cell(tbl, 3, 0, "Action",     text_color = color.white, bgcolor = #363a45, text_size = size.small)
+
+    // Populate rows
+    f_row(1, "1H",      h1Bull, h1Bear, h1NearBull, h1NearBear, i_tf1H)
+    f_row(2, "Daily",   dBull,  dBear,  dNearBull,  dNearBear,  i_tfD)
+    f_row(3, "Weekly",  wBull,  wBear,  wNearBull,  wNearBear,  i_tfW)
+    f_row(4, "Monthly", mBull,  mBear,  mNearBull,  mNearBear,  i_tfM)
+
+    // Chart TF row
+    ctValid = ctBullSignal or ctBearSignal
+    table.cell(tbl, 0, 5, "Chart",  text_color = color.yellow, bgcolor = #2a2e39, text_size = size.small)
+    table.cell(tbl, 1, 5, f_sigType(ctBullDiv, ctBearDiv),
+         text_color = f_sigColor(ctBullDiv, ctBearDiv), bgcolor = #2a2e39, text_size = size.small)
+    table.cell(tbl, 2, 5, f_nearOB(ctNearBullOB, ctNearBearOB, ctBullDiv, ctBearDiv),
+         text_color = f_nearOBColor(ctNearBullOB, ctNearBearOB, ctBullDiv, ctBearDiv),
+         bgcolor = #2a2e39, text_size = size.small)
+    table.cell(tbl, 3, 5, ctValid ? (ctBullSignal ? "▲ LONG" : "▼ SHORT") : "—",
+         text_color = ctValid ? (ctBullSignal ? color.lime : color.fuchsia) : color.gray,
+         bgcolor = #2a2e39, text_size = size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// ALERT CONDITIONS
+// ══════════════════════════════════════════════════════════════════════════════════
+
+// Chart-timeframe validated signals
+alertcondition(ctBullSignal,
+     title = "Bullish Divergence Near OB (Chart TF)",
+     message = "Symbol: {{ticker}}\nTimeframe: {{interval}}\nSignal: Bullish RSI Divergence\nNear Order Block: Yes")
+
+alertcondition(ctBearSignal,
+     title = "Bearish Divergence Near OB (Chart TF)",
+     message = "Symbol: {{ticker}}\nTimeframe: {{interval}}\nSignal: Bearish RSI Divergence\nNear Order Block: Yes")
+
+// MTF alerts — 1H
+alertcondition(i_tf1H and h1Bull and h1NearBull,
+     title = "Bullish Div Near OB — 1H",
+     message = "Symbol: {{ticker}}\nTimeframe: 1H\nSignal: Bullish RSI Divergence\nNear Order Block: Yes")
+
+alertcondition(i_tf1H and h1Bear and h1NearBear,
+     title = "Bearish Div Near OB — 1H",
+     message = "Symbol: {{ticker}}\nTimeframe: 1H\nSignal: Bearish RSI Divergence\nNear Order Block: Yes")
+
+// MTF alerts — Daily
+alertcondition(i_tfD and dBull and dNearBull,
+     title = "Bullish Div Near OB — Daily",
+     message = "Symbol: {{ticker}}\nTimeframe: Daily\nSignal: Bullish RSI Divergence\nNear Order Block: Yes")
+
+alertcondition(i_tfD and dBear and dNearBear,
+     title = "Bearish Div Near OB — Daily",
+     message = "Symbol: {{ticker}}\nTimeframe: Daily\nSignal: Bearish RSI Divergence\nNear Order Block: Yes")
+
+// MTF alerts — Weekly
+alertcondition(i_tfW and wBull and wNearBull,
+     title = "Bullish Div Near OB — Weekly",
+     message = "Symbol: {{ticker}}\nTimeframe: Weekly\nSignal: Bullish RSI Divergence\nNear Order Block: Yes")
+
+alertcondition(i_tfW and wBear and wNearBear,
+     title = "Bearish Div Near OB — Weekly",
+     message = "Symbol: {{ticker}}\nTimeframe: Weekly\nSignal: Bearish RSI Divergence\nNear Order Block: Yes")
+
+// MTF alerts — Monthly
+alertcondition(i_tfM and mBull and mNearBull,
+     title = "Bullish Div Near OB — Monthly",
+     message = "Symbol: {{ticker}}\nTimeframe: Monthly\nSignal: Bullish RSI Divergence\nNear Order Block: Yes")
+
+alertcondition(i_tfM and mBear and mNearBear,
+     title = "Bearish Div Near OB — Monthly",
+     message = "Symbol: {{ticker}}\nTimeframe: Monthly\nSignal: Bearish RSI Divergence\nNear Order Block: Yes")
+
+// Any timeframe combined alert
+bool anyBull = ctBullSignal or (i_tf1H and h1Bull and h1NearBull) or (i_tfD and dBull and dNearBull) or (i_tfW and wBull and wNearBull) or (i_tfM and mBull and mNearBull)
+bool anyBear = ctBearSignal or (i_tf1H and h1Bear and h1NearBear) or (i_tfD and dBear and dNearBear) or (i_tfW and wBear and wNearBear) or (i_tfM and mBear and mNearBear)
+
+alertcondition(anyBull,
+     title = "Bullish Div Near OB — ANY Timeframe",
+     message = "Symbol: {{ticker}}\nTimeframe: Multi-TF\nSignal: Bullish RSI Divergence detected on one or more timeframes\nNear Order Block: Yes")
+
+alertcondition(anyBear,
+     title = "Bearish Div Near OB — ANY Timeframe",
+     message = "Symbol: {{ticker}}\nTimeframe: Multi-TF\nSignal: Bearish RSI Divergence detected on one or more timeframes\nNear Order Block: Yes")
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// BACKGROUND HIGHLIGHT (optional visual cue on validated signals)
+// ══════════════════════════════════════════════════════════════════════════════════
+
+bgcolor(ctBullSignal ? color.new(color.green, 90) : na, title = "Bullish Signal BG")
+bgcolor(ctBearSignal ? color.new(color.red,   90) : na, title = "Bearish Signal BG")
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// END
+// ══════════════════════════════════════════════════════════════════════════════════
