@@ -5,7 +5,7 @@ package.domain = org.rsi
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 version = 1.0
-requirements = python3,kivy==2.2.1,kivymd==1.1.1,pillow,certifi,openssl
+requirements = python3,kivy==2.3.1,kivymd==1.1.1,pillow,certifi,pyjnius,android,openssl
 orientation = portrait
 fullscreen = 0
 
