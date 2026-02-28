@@ -88,30 +88,47 @@ PRESET_WATCHLISTS = {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def fetch_yahoo_data(symbol, interval, range_str):
-    """Fetch OHLCV via Yahoo Finance v8 chart API. Returns list of dicts."""
-    url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol)}"
-        f"?interval={interval}&range={range_str}"
+    """Fetch OHLCV via Yahoo Finance v8 chart API. Returns (bars, error_msg).
+    Tries query1 then query2 as fallback. Uses full browser User-Agent."""
+    ua = (
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Mobile Safari/537.36"
     )
-    headers = {"User-Agent": "Mozilla/5.0"}
-    req = Request(url, headers=headers)
-    try:
-        with urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception:
-        return None
+    hosts = ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]
+    data = None
+
+    for host in hosts:
+        url = (
+            f"https://{host}/v8/finance/chart/{quote(symbol)}"
+            f"?interval={interval}&range={range_str}"
+        )
+        req = Request(url, headers={"User-Agent": ua})
+        try:
+            with urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+            break
+        except Exception as e:
+            last_err = str(e)
+            continue
+
+    if data is None:
+        return None, f"Network error: {last_err}"
 
     try:
-        result = data["chart"]["result"][0]
+        chart = data.get("chart", {})
+        err = chart.get("error")
+        if err:
+            return None, f"API error: {err.get('description', str(err))}"
+        result = chart["result"][0]
         timestamps = result["timestamp"]
         q = result["indicators"]["quote"][0]
         opens = q["open"]
         highs = q["high"]
         lows = q["low"]
         closes = q["close"]
-        volumes = q["volume"]
-    except (KeyError, IndexError, TypeError):
-        return None
+    except (KeyError, IndexError, TypeError) as e:
+        return None, f"Parse error: {e}"
 
     bars = []
     for i in range(len(timestamps)):
@@ -123,7 +140,9 @@ def fetch_yahoo_data(symbol, interval, range_str):
             continue
         bars.append({"open": o, "high": h, "low": l, "close": c})
 
-    return bars if len(bars) > 30 else None
+    if len(bars) <= 30:
+        return None, f"Only {len(bars)} bars (need >30)"
+    return bars, None
 
 
 def calc_rsi(closes, length=14):
@@ -285,19 +304,20 @@ def check_proximity(price, ob_list, threshold):
 
 
 def scan_one(symbol, tf_label, rsi_len, pivot_len, ob_prox_pct):
-    """Scan a single symbol x timeframe. Returns result dict or None.
+    """Scan a single symbol x timeframe. Returns (result_dict, error_str).
+    Always returns a result when data is available, even if no divergence.
     Uses RSI pivots for divergence (matching TradingView indicator)
     and price pivots for Order Block detection."""
     cfg = TF_CONFIG[tf_label]
     yahoo_symbol = symbol + ".NS"
     try:
-        bars = fetch_yahoo_data(yahoo_symbol, cfg["interval"], cfg["range"])
+        bars, fetch_err = fetch_yahoo_data(yahoo_symbol, cfg["interval"], cfg["range"])
         if bars is None:
-            return None
+            return None, fetch_err or "No data"
 
         needed = rsi_len + pivot_len * 2 + 10
         if len(bars) < needed:
-            return None
+            return None, f"Only {len(bars)} bars (need {needed})"
 
         closes = [b["close"] for b in bars]
         highs = [b["high"] for b in bars]
@@ -307,18 +327,37 @@ def scan_one(symbol, tf_label, rsi_len, pivot_len, ob_prox_pct):
 
         # RSI Pivots — for divergence (matches TradingView)
         rsi_ph_idx, rsi_pl_idx = find_rsi_pivots(rsi, pivot_len, pivot_len)
-        if len(rsi_ph_idx) < 2 and len(rsi_pl_idx) < 2:
-            return None
 
         # Price Pivots — for Order Block detection
         price_ph_idx, price_pl_idx = find_pivots(highs, lows, pivot_len, pivot_len)
+
+        current_close = closes[-1]
+        current_rsi = rsi[-1]
+
+        # Default result (no signal)
+        result = {
+            "symbol": symbol,
+            "timeframe": tf_label,
+            "signal": "None",
+            "div_type": "",
+            "validated": False,
+            "near_ob": False,
+            "rsi": round(current_rsi, 1),
+            "price": round(current_close, 2),
+            "ob_zone": "",
+        }
+
+        if len(rsi_ph_idx) < 2 and len(rsi_pl_idx) < 2:
+            return result, None
 
         # Divergences (RSI pivot based, with range check)
         reg_bull, reg_bear, hid_bull, hid_bear = detect_divergences(
             bars, rsi, rsi_ph_idx, rsi_pl_idx, range_lower=5, range_upper=60
         )
 
-        threshold = len(bars) - pivot_len - 3
+        # Recency: divergence must be within last pivot_len*5 bars
+        # (~25 bars = ~1 month on daily; was pivot_len+3 which was only ~8 bars)
+        threshold = len(bars) - pivot_len * 5
         has_reg_bull = len(reg_bull) > 0 and reg_bull[-1] >= threshold
         has_hid_bull = len(hid_bull) > 0 and hid_bull[-1] >= threshold
         has_reg_bear = len(reg_bear) > 0 and reg_bear[-1] >= threshold
@@ -327,7 +366,6 @@ def scan_one(symbol, tf_label, rsi_len, pivot_len, ob_prox_pct):
         # Order Blocks (price pivot based)
         bull_obs, bear_obs = detect_order_blocks(bars, price_ph_idx, price_pl_idx)
 
-        current_close = closes[-1]
         near_bull_ob = check_proximity(current_close, bull_obs, ob_prox_pct)
         near_bear_ob = check_proximity(current_close, bear_obs, ob_prox_pct)
 
@@ -355,8 +393,6 @@ def scan_one(symbol, tf_label, rsi_len, pivot_len, ob_prox_pct):
             elif signal == "Bearish" and near_bear_ob:
                 validated = True
 
-        current_rsi = rsi[-1]
-
         ob_zone = ""
         if validated and signal == "Bullish" and bull_obs:
             ob = bull_obs[-1]
@@ -365,19 +401,16 @@ def scan_one(symbol, tf_label, rsi_len, pivot_len, ob_prox_pct):
             ob = bear_obs[-1]
             ob_zone = f"{ob['low']:.2f} - {ob['high']:.2f}"
 
-        return {
-            "symbol": symbol,
-            "timeframe": tf_label,
+        result.update({
             "signal": signal,
             "div_type": div_type,
             "validated": validated,
             "near_ob": near_bull_ob or near_bear_ob,
-            "rsi": round(current_rsi, 1),
-            "price": round(current_close, 2),
             "ob_zone": ob_zone,
-        }
-    except Exception:
-        return None
+        })
+        return result, None
+    except Exception as e:
+        return None, f"Error: {e}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -877,6 +910,7 @@ class RSIScreenerApp(MDApp):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.all_results = []
+        self.scan_errors = []
         self.current_filter = "all"
         self.scanning = False
 
@@ -942,6 +976,7 @@ class RSIScreenerApp(MDApp):
     def _run_scan_thread(self, symbols, timeframes, rsi_len, pivot_len, ob_prox, total):
         """Run scan in background thread, post results to UI thread."""
         results = []
+        errors = []
         with ThreadPoolExecutor(max_workers=10) as pool:
             futures = {}
             for sym in symbols:
@@ -951,9 +986,12 @@ class RSIScreenerApp(MDApp):
 
             done_count = 0
             for future in as_completed(futures):
-                r = future.result()
-                if r is not None:
-                    results.append(r)
+                result, err = future.result()
+                if result is not None:
+                    results.append(result)
+                elif err:
+                    sym, tf = futures[future]
+                    errors.append(f"{sym}({tf}): {err}")
                 done_count += 1
                 if done_count % 5 == 0:
                     pct = int(done_count / total * 100)
@@ -964,26 +1002,41 @@ class RSIScreenerApp(MDApp):
         signals_count = sum(1 for r in results if r["signal"] != "None")
         validated_count = sum(1 for r in results if r["validated"])
 
-        Clock.schedule_once(lambda dt: self._scan_complete(results, total, signals_count, validated_count))
+        Clock.schedule_once(lambda dt: self._scan_complete(
+            results, total, signals_count, validated_count, errors
+        ))
 
     def _update_progress(self, pct):
         self.root.ids.scan_status.text = f"Scanning... {pct}%"
 
-    def _scan_complete(self, results, total, signals, validated):
+    def _scan_complete(self, results, total, signals, validated, errors=None):
         self.all_results = results
+        self.scan_errors = errors or []
         self.scanning = False
 
         self.root.ids.scan_btn.text = "SCAN NOW"
         self.root.ids.scan_btn.disabled = False
-        self.root.ids.scan_status.text = f"Done - {validated} validated signal(s) found"
+
+        fetched = len(results)
+        failed = len(self.scan_errors)
+        if failed > 0:
+            self.root.ids.scan_status.text = (
+                f"Done - {signals} signal(s), {validated} validated | {failed} failed"
+            )
+        else:
+            self.root.ids.scan_status.text = f"Done - {signals} signal(s), {validated} validated"
 
         self.root.ids.stats_row.opacity = 1
-        self.root.ids.stat_scanned.text = str(total)
+        self.root.ids.stat_scanned.text = str(fetched)
         self.root.ids.stat_signals.text = str(signals)
         self.root.ids.stat_validated.text = str(validated)
 
         now = datetime.now().strftime("%H:%M:%S")
         self.root.ids.last_scan_label.text = f"Last: {now}"
+
+        # Show first error as snackbar if ALL failed (likely API issue)
+        if failed > 0 and fetched == 0 and self.scan_errors:
+            Snackbar(text=f"All fetches failed: {self.scan_errors[0]}").open()
 
         self.render_results()
 

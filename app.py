@@ -369,8 +369,9 @@ def scan_one(symbol, tf_label, rsi_len, pivot_len, ob_prox_pct):
             df, rsi, rsi_ph_idx, rsi_pl_idx, range_lower=5, range_upper=60
         )
 
-        # Only care about recent divergences
-        threshold = len(df) - pivot_len - 3
+        # Only care about recent divergences (within last pivot_len*5 bars)
+        # ~25 bars = ~1 month on daily; was pivot_len+3 which was only ~8 bars
+        threshold = len(df) - pivot_len * 5
 
         has_reg_bull = len(reg_bull) > 0 and reg_bull[-1] >= threshold
         has_hid_bull = len(hid_bull) > 0 and hid_bull[-1] >= threshold
