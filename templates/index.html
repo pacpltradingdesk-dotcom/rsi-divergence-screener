@@ -243,6 +243,7 @@ body {
 .stat-red .stat-value { color: var(--red); }
 .stat-gold .stat-value { color: var(--gold); }
 .stat-blue .stat-value { color: var(--blue); }
+.stat-purple .stat-value { color: var(--purple); }
 
 /* ═══ Filter Buttons ═══ */
 .filter-row {
@@ -414,6 +415,61 @@ tbody td {
   50% { opacity: 0.6; }
 }
 
+/* ═══ Feature Toggles ═══ */
+.feature-toggles {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.feature-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.toggle-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  cursor: pointer;
+}
+.toggle-switch input { display: none; }
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  border-radius: 24px;
+  transition: all 0.25s;
+}
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 3px;
+  bottom: 3px;
+  background: var(--muted);
+  border-radius: 50%;
+  transition: all 0.25s;
+}
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--green);
+}
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(20px);
+  background: #fff;
+}
+.settings-grid .field.disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
 /* ═══ Responsive ═══ */
 @media (max-width: 768px) {
   .container { padding: 12px; }
@@ -457,18 +513,41 @@ tbody td {
     <!-- Settings -->
     <div class="card">
       <div class="card-title">Settings</div>
-      <div class="settings-grid">
-        <div class="field">
+
+      <!-- Feature Toggles -->
+      <div class="feature-toggles">
+        <div class="feature-toggle">
+          <label class="toggle-switch">
+            <input type="checkbox" id="rsiDivOn" checked>
+            <span class="toggle-slider"></span>
+          </label>
+          <span class="toggle-label">RSI Divergence</span>
+        </div>
+        <div class="feature-toggle">
+          <label class="toggle-switch">
+            <input type="checkbox" id="obOn" checked>
+            <span class="toggle-slider"></span>
+          </label>
+          <span class="toggle-label">Order Block</span>
+        </div>
+      </div>
+
+      <div class="settings-grid" style="margin-top:12px">
+        <div class="field rsi-setting">
           <label>RSI Length</label>
           <input type="number" id="rsiLen" value="14" min="2" max="50">
         </div>
-        <div class="field">
+        <div class="field rsi-setting">
           <label>Pivot Length</label>
           <input type="number" id="pivotLen" value="5" min="2" max="20">
         </div>
-        <div class="field">
+        <div class="field ob-setting">
           <label>OB Prox. %</label>
           <input type="number" id="obProx" value="1.0" min="0.1" max="10" step="0.1">
+        </div>
+        <div class="field ob-setting">
+          <label>OB Confirm %</label>
+          <input type="number" id="obConfirm" value="1.0" min="0" max="10" step="0.5" title="0 = off. Bullish OB: price closes above OB high + X%. Bearish OB: price closes below OB low − X%.">
         </div>
       </div>
       <div style="margin-top:14px">
@@ -500,6 +579,9 @@ tbody td {
     <div class="stat stat-gold">
       <div><div class="stat-value" id="statValidated">0</div><div class="stat-label">Validated (Near OB)</div></div>
     </div>
+    <div class="stat stat-purple" id="statOBConfWrap" style="display:none">
+      <div><div class="stat-value" id="statOBConf">0</div><div class="stat-label">OB Confirmed</div></div>
+    </div>
   </div>
 
   <!-- ═══ Results ═══ -->
@@ -513,6 +595,7 @@ tbody td {
         <button class="filter-btn" data-filter="bullish" onclick="setFilter('bullish',this)">Bullish</button>
         <button class="filter-btn" data-filter="bearish" onclick="setFilter('bearish',this)">Bearish</button>
         <button class="filter-btn" data-filter="hidden" onclick="setFilter('hidden',this)">Hidden Div</button>
+        <button class="filter-btn" data-filter="ob_confirmed" onclick="setFilter('ob_confirmed',this)">OB Confirmed</button>
       </div>
     </div>
 
@@ -528,11 +611,13 @@ tbody td {
             <th onclick="sortTable('ob_zone')">OB Zone</th>
             <th onclick="sortTable('rsi')">RSI <span class="sort-arrow"></span></th>
             <th onclick="sortTable('price')">Price <span class="sort-arrow"></span></th>
+            <th onclick="sortTable('mcap')">Market Cap <span class="sort-arrow"></span></th>
+            <th onclick="sortTable('ob_confirmed')">OB Confirm <span class="sort-arrow"></span></th>
             <th onclick="sortTable('validated')">Action <span class="sort-arrow"></span></th>
           </tr>
         </thead>
         <tbody id="resultsBody">
-          <tr><td colspan="9">
+          <tr><td colspan="11">
             <div class="empty-state">
               <div class="icon">&#128270;</div>
               <p>Add symbols and click <strong>Scan Now</strong> to detect RSI divergence near Order Blocks</p>
@@ -551,6 +636,15 @@ let allResults = [];
 let currentFilter = 'all';
 let sortCol = 'validated';
 let sortAsc = false;
+
+function formatMcap(val) {
+  if (val == null) return '<span style="color:var(--muted)">—</span>';
+  if (val >= 1e12) return (val / 1e12).toFixed(2) + ' T';
+  if (val >= 1e9)  return (val / 1e9).toFixed(2) + ' B';
+  if (val >= 1e7)  return (val / 1e7).toFixed(2) + ' Cr';
+  if (val >= 1e5)  return (val / 1e5).toFixed(2) + ' L';
+  return val.toLocaleString();
+}
 
 // ═══ Presets ═══
 function loadPreset(name, syms) {
@@ -580,8 +674,12 @@ async function runScan() {
     if (document.getElementById('tf-' + tf).checked) timeframes.push(tf);
   });
 
+  const rsiDivOn = document.getElementById('rsiDivOn').checked;
+  const obOn = document.getElementById('obOn').checked;
+
   if (symbols.length === 0) { status.innerHTML = '<span style="color:var(--red)">Enter at least one symbol</span>'; return; }
   if (timeframes.length === 0) { status.innerHTML = '<span style="color:var(--red)">Select at least one timeframe</span>'; return; }
+  if (!rsiDivOn && !obOn) { status.innerHTML = '<span style="color:var(--red)">Enable at least one: RSI Divergence or Order Block</span>'; return; }
 
   // UI state
   btn.disabled = true;
@@ -598,7 +696,10 @@ async function runScan() {
         timeframes,
         rsi_len:   parseInt(document.getElementById('rsiLen').value),
         pivot_len: parseInt(document.getElementById('pivotLen').value),
-        ob_prox:   parseFloat(document.getElementById('obProx').value),
+        ob_prox:    parseFloat(document.getElementById('obProx').value),
+        ob_confirm: parseFloat(document.getElementById('obConfirm').value),
+        rsi_div_on: rsiDivOn,
+        ob_on:      obOn,
       })
     });
     const data = await res.json();
@@ -615,6 +716,10 @@ async function runScan() {
     document.getElementById('statScanned').textContent = data.scanned;
     document.getElementById('statSignals').textContent = data.signals;
     document.getElementById('statValidated').textContent = data.validated;
+    // OB Confirmed stat
+    const obConfVal = data.ob_confirmed_count || 0;
+    document.getElementById('statOBConf').textContent = obConfVal;
+    document.getElementById('statOBConfWrap').style.display = obConfVal > 0 ? 'flex' : 'none';
     document.getElementById('lastScan').textContent = 'Last scan: ' + data.timestamp;
 
     status.innerHTML = `Done — <span class="count">${data.validated}</span> validated signal(s) found`;
@@ -637,7 +742,7 @@ function renderTable() {
   data = sortResults(data);
 
   if (data.length === 0) {
-    body.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="icon">&#128528;</div><p>No results match the current filter</p></div></td></tr>`;
+    body.innerHTML = `<tr><td colspan="11"><div class="empty-state"><div class="icon">&#128528;</div><p>No results match the current filter</p></div></td></tr>`;
     return;
   }
 
@@ -674,6 +779,13 @@ function renderTable() {
       <td class="price-val" style="color:var(--muted);font-size:12px">${r.ob_zone || '—'}</td>
       <td class="rsi-val ${rsiClass}">${r.rsi}</td>
       <td class="price-val">${r.price.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</td>
+      <td class="price-val" style="font-size:12px">${formatMcap(r.mcap)}</td>
+      <td>${r.ob_confirmed
+        ? '<span class="badge-validated ' + (r.ob_confirm_dir === 'Bullish' ? 'badge-long' : 'badge-short') + '">' +
+          (r.ob_confirm_dir === 'Bullish' ? '&#9650; ' : '&#9660; ') + r.ob_confirm_dir + '</span>' +
+          (r.ob_confirm_zone ? '<div style="font-size:10px;color:var(--muted);margin-top:2px">' + r.ob_confirm_zone + '</div>' : '')
+        : '<span style="color:var(--muted)">—</span>'
+      }</td>
       <td>${action}</td>
     </tr>`;
   }).join('');
@@ -686,8 +798,9 @@ function filterResults(data) {
     case 'validated': return data.filter(r => r.validated);
     case 'bullish':   return data.filter(r => r.signal === 'Bullish');
     case 'bearish':   return data.filter(r => r.signal === 'Bearish');
-    case 'hidden':    return data.filter(r => r.div_type === 'Hidden');
-    default:          return data;
+    case 'hidden':       return data.filter(r => r.div_type === 'Hidden');
+    case 'ob_confirmed': return data.filter(r => r.ob_confirmed);
+    default:             return data;
   }
 }
 function setFilter(f, el) {
@@ -724,6 +837,35 @@ document.querySelectorAll('.preset-btn[data-syms]').forEach(btn => {
     loadPreset(name, syms);
   });
 });
+
+// ═══ Feature Toggle Logic ═══
+function updateToggleUI() {
+  const rsiOn = document.getElementById('rsiDivOn').checked;
+  const obOn = document.getElementById('obOn').checked;
+
+  // Dim related settings when feature is OFF
+  document.querySelectorAll('.rsi-setting').forEach(el => {
+    el.classList.toggle('disabled', !rsiOn);
+  });
+  document.querySelectorAll('.ob-setting').forEach(el => {
+    el.classList.toggle('disabled', !obOn);
+  });
+
+  // Update header title to reflect active features
+  const h1 = document.querySelector('.header h1');
+  if (rsiOn && obOn) {
+    h1.innerHTML = 'RSI Divergence <span>×</span> Order Block Screener';
+  } else if (rsiOn) {
+    h1.innerHTML = 'RSI Divergence Screener';
+  } else if (obOn) {
+    h1.innerHTML = 'Order Block Screener';
+  } else {
+    h1.innerHTML = 'Screener <span style="color:var(--red)">(Enable a feature)</span>';
+  }
+}
+
+document.getElementById('rsiDivOn').addEventListener('change', updateToggleUI);
+document.getElementById('obOn').addEventListener('change', updateToggleUI);
 
 // ═══ Keyboard shortcut ═══
 document.addEventListener('keydown', e => {

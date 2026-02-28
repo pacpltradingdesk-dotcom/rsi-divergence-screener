@@ -323,6 +323,32 @@ def check_proximity(price, ob_list, threshold):
     return False
 
 
+def check_ob_breakout(price, ob_list, confirm_pct, ob_type):
+    """
+    OB breakout confirmation check.
+
+    Bullish OB  = red candle (e.g. 100–105).
+      Confirmed when price closes above OB high + confirm% → price > 105 * 1.01
+
+    Bearish OB  = green candle (e.g. 100–105).
+      Confirmed when price closes below OB low − confirm% → price < 100 * 0.99
+
+    Returns (confirmed: bool, ob_dict or None)
+    """
+    for ob in reversed(ob_list[-10:]):
+        if ob_type == "bullish":
+            # Bullish OB (red candle) → price must close above OB high + X%
+            target = ob["high"] * (1.0 + confirm_pct)
+            if price >= target:
+                return True, ob
+        elif ob_type == "bearish":
+            # Bearish OB (green candle) → price must close below OB low − X%
+            target = ob["low"] * (1.0 - confirm_pct)
+            if price <= target:
+                return True, ob
+    return False, None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SCANNER
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -332,20 +358,27 @@ def fetch_data(symbol, interval, period):
     ticker = yf.Ticker(symbol)
     df = ticker.history(interval=interval, period=period, auto_adjust=True)
     if df.empty:
-        return None
+        return None, None
     # Ensure standard column names
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.droplevel(1)
-    return df
+    # Market cap
+    try:
+        mcap = ticker.info.get("marketCap")
+    except Exception:
+        mcap = None
+    return df, mcap
 
 
-def scan_one(symbol, tf_label, rsi_len, pivot_len, ob_prox_pct):
+def scan_one(symbol, tf_label, rsi_len, pivot_len, ob_prox_pct,
+             rsi_div_on=True, ob_on=True, ob_confirm_pct=0.0):
     """Scan a single symbol × timeframe. Returns a result dict.
-    Uses RSI pivots for divergence (matching TradingView indicator)
-    and price pivots for Order Block detection."""
+    rsi_div_on: enable RSI divergence detection
+    ob_on: enable Order Block detection
+    ob_confirm_pct: OB breakout confirmation % (0 = off)"""
     cfg = TF_CONFIG[tf_label]
     try:
-        df = fetch_data(symbol, cfg["interval"], cfg["period"])
+        df, mcap = fetch_data(symbol, cfg["interval"], cfg["period"])
         if df is None or df.empty:
             return None
 
@@ -353,42 +386,28 @@ def scan_one(symbol, tf_label, rsi_len, pivot_len, ob_prox_pct):
         if len(df) < needed:
             return None
 
-        # RSI
+        # RSI (always calculated for display)
         rsi = calc_rsi(df["Close"], rsi_len)
-
-        # RSI Pivots — for divergence detection (matches TradingView)
-        rsi_ph_idx, rsi_pl_idx = find_rsi_pivots(rsi, pivot_len, pivot_len)
-        if len(rsi_ph_idx) < 2 and len(rsi_pl_idx) < 2:
-            return None
-
-        # Price Pivots — for Order Block detection
-        price_ph_idx, price_pl_idx = find_pivots(df["High"], df["Low"], pivot_len, pivot_len)
-
-        # Divergences (RSI pivot based, with range check)
-        reg_bull, reg_bear, hid_bull, hid_bear = detect_divergences(
-            df, rsi, rsi_ph_idx, rsi_pl_idx, range_lower=5, range_upper=60
-        )
-
-        # Only care about recent divergences (within last pivot_len*5 bars)
-        # ~25 bars = ~1 month on daily; was pivot_len+3 which was only ~8 bars
-        threshold = len(df) - pivot_len * 5
-
-        has_reg_bull = len(reg_bull) > 0 and reg_bull[-1] >= threshold
-        has_hid_bull = len(hid_bull) > 0 and hid_bull[-1] >= threshold
-        has_reg_bear = len(reg_bear) > 0 and reg_bear[-1] >= threshold
-        has_hid_bear = len(hid_bear) > 0 and hid_bear[-1] >= threshold
-
-        # Order Blocks (price pivot based)
-        bull_obs, bear_obs = detect_order_blocks(df, price_ph_idx, price_pl_idx)
-
-        # Proximity
         current_close = float(df["Close"].iloc[-1])
-        near_bull_ob = check_proximity(current_close, bull_obs, ob_prox_pct)
-        near_bear_ob = check_proximity(current_close, bear_obs, ob_prox_pct)
+        current_rsi = float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else 0.0
 
-        # Pick strongest recent divergence
+        # ── RSI Divergence ──
         signal = "None"
         div_type = ""
+        has_reg_bull = has_hid_bull = has_reg_bear = has_hid_bear = False
+
+        if rsi_div_on:
+            rsi_ph_idx, rsi_pl_idx = find_rsi_pivots(rsi, pivot_len, pivot_len)
+            if len(rsi_ph_idx) >= 2 or len(rsi_pl_idx) >= 2:
+                reg_bull, reg_bear, hid_bull, hid_bear = detect_divergences(
+                    df, rsi, rsi_ph_idx, rsi_pl_idx, range_lower=5, range_upper=60
+                )
+                threshold = len(df) - pivot_len * 5
+                has_reg_bull = len(reg_bull) > 0 and reg_bull[-1] >= threshold
+                has_hid_bull = len(hid_bull) > 0 and hid_bull[-1] >= threshold
+                has_reg_bear = len(reg_bear) > 0 and reg_bear[-1] >= threshold
+                has_hid_bear = len(hid_bear) > 0 and hid_bear[-1] >= threshold
+
         candidates = []
         if has_reg_bull:
             candidates.append(("Bullish", "Regular", reg_bull[-1]))
@@ -399,40 +418,96 @@ def scan_one(symbol, tf_label, rsi_len, pivot_len, ob_prox_pct):
         if has_hid_bear:
             candidates.append(("Bearish", "Hidden", hid_bear[-1]))
 
-        validated = False
         if candidates:
-            # Most recent divergence first
             candidates.sort(key=lambda x: -x[2])
             signal = candidates[0][0]
             div_type = candidates[0][1]
 
-            # Validate with OB proximity
+        # ── Order Blocks ──
+        near_bull_ob = False
+        near_bear_ob = False
+        bull_obs, bear_obs = [], []
+        ob_confirmed = False
+        ob_confirm_dir = None
+        ob_confirm_zone = None
+
+        if ob_on:
+            price_ph_idx, price_pl_idx = find_pivots(df["High"], df["Low"], pivot_len, pivot_len)
+            bull_obs, bear_obs = detect_order_blocks(df, price_ph_idx, price_pl_idx)
+            near_bull_ob = check_proximity(current_close, bull_obs, ob_prox_pct)
+            near_bear_ob = check_proximity(current_close, bear_obs, ob_prox_pct)
+
+            # OB Breakout Confirmation
+            if ob_confirm_pct > 0:
+                # Bullish OB (red candle) → price closed above high + X%
+                bull_conf, bull_conf_ob = check_ob_breakout(
+                    current_close, bull_obs, ob_confirm_pct, "bullish")
+                # Bearish OB (green candle) → price closed below low − X%
+                bear_conf, bear_conf_ob = check_ob_breakout(
+                    current_close, bear_obs, ob_confirm_pct, "bearish")
+
+                if bull_conf and bull_conf_ob:
+                    ob_confirmed = True
+                    ob_confirm_dir = "Bullish"
+                    ob_confirm_zone = f"{bull_conf_ob['low']:.2f} – {bull_conf_ob['high']:.2f}"
+                if bear_conf and bear_conf_ob:
+                    ob_confirmed = True
+                    ob_confirm_dir = "Bearish"
+                    ob_confirm_zone = f"{bear_conf_ob['low']:.2f} – {bear_conf_ob['high']:.2f}"
+
+        # ── Validation logic ──
+        validated = False
+        if rsi_div_on and ob_on:
+            # Both ON → original logic: divergence + near OB
             if signal == "Bullish" and near_bull_ob:
                 validated = True
             elif signal == "Bearish" and near_bear_ob:
                 validated = True
+        elif rsi_div_on and not ob_on:
+            # Only RSI → any divergence = validated
+            validated = signal != "None"
+        elif not rsi_div_on and ob_on:
+            # Only OB → near any OB = validated
+            validated = near_bull_ob or near_bear_ob
+            if near_bull_ob and not near_bear_ob:
+                signal = "Bullish"
+            elif near_bear_ob and not near_bull_ob:
+                signal = "Bearish"
+            elif near_bull_ob and near_bear_ob:
+                signal = "Bullish"  # default to bullish if both
 
-        current_rsi = float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else 0.0
+        # Skip if nothing found based on active features
+        if not rsi_div_on and not ob_on:
+            return None
+        if rsi_div_on and not ob_on and signal == "None":
+            return None
+        if not rsi_div_on and ob_on and not (near_bull_ob or near_bear_ob):
+            return None
 
-        # OB zone details for display
+        # OB zone details
         ob_zone = None
-        if validated and signal == "Bullish" and bull_obs:
-            ob = bull_obs[-1]
-            ob_zone = f"{ob['low']:.2f} – {ob['high']:.2f}"
-        elif validated and signal == "Bearish" and bear_obs:
-            ob = bear_obs[-1]
-            ob_zone = f"{ob['low']:.2f} – {ob['high']:.2f}"
+        if ob_on and (near_bull_ob or near_bear_ob):
+            if (signal == "Bullish" or near_bull_ob) and bull_obs:
+                ob = bull_obs[-1]
+                ob_zone = f"{ob['low']:.2f} – {ob['high']:.2f}"
+            elif (signal == "Bearish" or near_bear_ob) and bear_obs:
+                ob = bear_obs[-1]
+                ob_zone = f"{ob['low']:.2f} – {ob['high']:.2f}"
 
         return {
-            "symbol":     symbol,
-            "timeframe":  tf_label,
-            "signal":     signal,
-            "div_type":   div_type,
-            "validated":  validated,
-            "near_ob":    near_bull_ob or near_bear_ob,
-            "rsi":        round(current_rsi, 1),
-            "price":      round(current_close, 2),
-            "ob_zone":    ob_zone,
+            "symbol":        symbol,
+            "timeframe":     tf_label,
+            "signal":        signal,
+            "div_type":      div_type,
+            "validated":     validated,
+            "near_ob":       near_bull_ob or near_bear_ob,
+            "rsi":           round(current_rsi, 1),
+            "price":         round(current_close, 2),
+            "ob_zone":       ob_zone,
+            "mcap":          mcap,
+            "ob_confirmed":  ob_confirmed,
+            "ob_confirm_dir": ob_confirm_dir,
+            "ob_confirm_zone": ob_confirm_zone,
         }
 
     except Exception:
@@ -440,7 +515,8 @@ def scan_one(symbol, tf_label, rsi_len, pivot_len, ob_prox_pct):
         return None
 
 
-def run_scan(symbols, timeframes, rsi_len, pivot_len, ob_prox_pct):
+def run_scan(symbols, timeframes, rsi_len, pivot_len, ob_prox_pct,
+             rsi_div_on=True, ob_on=True, ob_confirm_pct=0.0):
     """Scan all symbols × timeframes in parallel."""
     tasks = []
     for sym in symbols:
@@ -450,7 +526,8 @@ def run_scan(symbols, timeframes, rsi_len, pivot_len, ob_prox_pct):
     results = []
     with ThreadPoolExecutor(max_workers=20) as pool:
         futures = {
-            pool.submit(scan_one, sym, tf, rsi_len, pivot_len, ob_prox_pct): (sym, tf)
+            pool.submit(scan_one, sym, tf, rsi_len, pivot_len, ob_prox_pct,
+                        rsi_div_on, ob_on, ob_confirm_pct): (sym, tf)
             for sym, tf in tasks
         }
         for future in as_completed(futures):
@@ -480,16 +557,23 @@ def api_scan():
     rsi_len    = int(data.get("rsi_len", 14))
     pivot_len  = int(data.get("pivot_len", 5))
     ob_prox    = float(data.get("ob_prox", 1.0)) / 100.0
+    rsi_div_on = bool(data.get("rsi_div_on", True))
+    ob_on      = bool(data.get("ob_on", True))
+    ob_confirm = float(data.get("ob_confirm", 0.0)) / 100.0
 
     if not symbols:
         return jsonify({"error": "No symbols provided"}), 400
+    if not rsi_div_on and not ob_on:
+        return jsonify({"error": "Enable at least one: RSI Divergence or Order Block"}), 400
 
-    results = run_scan(symbols, timeframes, rsi_len, pivot_len, ob_prox)
+    results = run_scan(symbols, timeframes, rsi_len, pivot_len, ob_prox,
+                       rsi_div_on, ob_on, ob_confirm)
     return jsonify({
         "results": results,
         "scanned": len(symbols) * len(timeframes),
         "signals": sum(1 for r in results if r["signal"] != "None"),
         "validated": sum(1 for r in results if r["validated"]),
+        "ob_confirmed_count": sum(1 for r in results if r.get("ob_confirmed")),
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
 
@@ -500,6 +584,9 @@ def api_presets():
 
 
 if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    debug = os.environ.get("RENDER") is None  # debug only locally
     print("\n  RSI Divergence × Order Block Screener")
-    print("  Open http://127.0.0.1:5000 in your browser\n")
-    app.run(debug=True, host="127.0.0.1", port=5000)
+    print(f"  Open http://127.0.0.1:{port} in your browser\n")
+    app.run(debug=debug, host="0.0.0.0", port=port)

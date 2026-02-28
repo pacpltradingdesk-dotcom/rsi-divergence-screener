@@ -1,7 +1,9 @@
 __pycache__/
 *.pyc
-.buildozer/
-bin/
-*.apk
 .env
-*.spec.bak
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.claude/
