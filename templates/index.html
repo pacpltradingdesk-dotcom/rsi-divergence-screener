@@ -688,9 +688,12 @@ async function runScan() {
   status.innerHTML = `<span class="spinner"></span> Scanning ${symbols.length} symbols × ${timeframes.length} timeframes...`;
 
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 min timeout
     const res = await fetch('/api/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
       body: JSON.stringify({
         symbols,
         timeframes,
@@ -702,6 +705,11 @@ async function runScan() {
         ob_on:      obOn,
       })
     });
+    clearTimeout(timeoutId);
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || `Server error ${res.status}`);
+    }
     const data = await res.json();
 
     if (data.error) {
