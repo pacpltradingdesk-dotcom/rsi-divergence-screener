@@ -45,15 +45,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('rsi_mobile/buildozer.spec') }}
-          restore-keys: |
-            buildozer-${{ runner.os }}-
+          key: buildozer-v3-${{ runner.os }}-${{ hashFiles('rsi_mobile/buildozer.spec') }}
 
       - name: Build APK
         env:
           BUILDOZER_WARN_ON_ROOT: "0"
         run: |
           cd rsi_mobile
+          # Clean stale builds to avoid cached .c file issues
+          buildozer android clean 2>/dev/null || true
           yes | buildozer android debug 2>&1 | tee build.log
           echo "--- Checking for APK ---"
           find . -name "*.apk" -type f 2>/dev/null || echo "No APK found"
